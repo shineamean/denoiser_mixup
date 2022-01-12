@@ -13,7 +13,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .resample import downsample2, upsample2
-from .utils import capture_init
+from .utils import capture_init, mixup_data
 
 
 class BLSTM(nn.Module):
@@ -156,7 +156,7 @@ class Demucs(nn.Module):
     def total_stride(self):
         return self.stride ** self.depth // self.resample
 
-    def forward(self, mix):
+    def forward(self, mix, is_mixup=False, lam=1.):
         if mix.dim() == 2:
             mix = mix.unsqueeze(1)
 
@@ -181,6 +181,16 @@ class Demucs(nn.Module):
         x = x.permute(2, 0, 1)
         x, _ = self.lstm(x)
         x = x.permute(1, 2, 0)
+        if is_mixup == True:
+            #print(skips[0].shape, skips[1].shape)
+            x, index = mixup_data(x, lam)
+            for i in range(len(self.encoder)):
+                mixed, _ = mixup_data(skips[i], lam, index)
+                skips.append(mixed)
+            
+            skips = skips[len(self.encoder):]
+            #print(skips[0].shape, skips[1].shape)
+
         for decode in self.decoder:
             skip = skips.pop(-1)
             x = x + skip[..., :x.shape[-1]]
@@ -192,6 +202,8 @@ class Demucs(nn.Module):
             x = downsample2(x)
 
         x = x[..., :length]
+        if is_mixup == True:
+            return std * x, index
         return std * x
 
 

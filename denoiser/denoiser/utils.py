@@ -11,7 +11,7 @@ from contextlib import contextmanager
 import inspect
 import time
 import sys
-
+import numpy as np
 import torch
 
 logger = logging.getLogger(__name__)
@@ -172,3 +172,24 @@ def bold(text):
     Display text in bold in the terminal.
     """
     return colorize(text, "1")
+
+def mixup_process(target_batch, lam):
+    indices = np.random.permutation(out.size(0))
+    target_batch = target_batch*lam + target_batch[indices]*(1-lam)
+
+    return target_batch
+
+def mixup_data(target_batch, lam, index=None):
+    '''
+    if alpha > 0. :
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.
+    '''
+    batch_size = target_batch.size()[0]
+    if index is None:
+        index = torch.randperm(batch_size).cuda()
+    mixed_batch = lam*target_batch + (1 - lam)*target_batch[index,:]
+
+    return mixed_batch, index
+

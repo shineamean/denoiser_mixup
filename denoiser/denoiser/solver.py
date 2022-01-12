@@ -13,12 +13,13 @@ import time
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 from . import augment, distrib, pretrained
 from .enhance import enhance
 from .evaluate import evaluate
 from .stft_loss import MultiResolutionSTFTLoss
-from .utils import bold, copy_state, pull_metric, serialize_model, swap_state, LogProgress
+from .utils import bold, copy_state, pull_metric, serialize_model, swap_state, LogProgress, mixup_data
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ class Solver(object):
             start = time.time()
             logger.info('-' * 70)
             logger.info("Training...")
-            train_loss = self._run_one_epoch(epoch)
+            train_loss = self._run_one_epoch(epoch, mix_alpha=0.1)
             logger.info(
                 bold(f'Train Summary | End of Epoch {epoch + 1} | '
                      f'Time {time.time() - start:.2f}s | Train Loss {train_loss:.5f}'))
@@ -190,7 +191,7 @@ class Solver(object):
                     self._serialize()
                     logger.debug("Checkpoint saved to %s", self.checkpoint_file.resolve())
 
-    def _run_one_epoch(self, epoch, cross_valid=False):
+    def _run_one_epoch(self, epoch, cross_valid=False, mix_alpha=None):
         total_loss = 0
         data_loader = self.tr_loader if not cross_valid else self.cv_loader
 
@@ -207,7 +208,12 @@ class Solver(object):
                 sources = self.augment(sources)
                 noise, clean = sources
                 noisy = noise + clean
-            estimate = self.dmodel(noisy)
+            if mix_alpha:
+                lam = np.random.beta(mix_alpha, mix_alpha)
+                estimate, index = self.dmodel(noisy, is_mixup=True, lam=lam)
+                clean, _ = mixup_data(clean, lam, index)
+            else:
+                estimate = self.dmodel(noisy)
             # apply a loss function after each layer
             with torch.autograd.set_detect_anomaly(True):
                 if self.args.loss == 'l1':
