@@ -193,3 +193,11 @@ def mixup_data(target_batch, lam, index=None):
 
     return mixed_batch, index
 
+def get_model(model, ema=False):
+    if ema:
+        for param in model.parameters():
+            param.detach_()
+
+    return model
+
+

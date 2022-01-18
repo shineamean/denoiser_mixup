@@ -19,7 +19,7 @@ from . import augment, distrib, pretrained
 from .enhance import enhance
 from .evaluate import evaluate
 from .stft_loss import MultiResolutionSTFTLoss
-from .utils import bold, copy_state, pull_metric, serialize_model, swap_state, LogProgress, mixup_data
+from .utils import bold, copy_state, pull_metric, serialize_model, swap_state, LogProgress, mixup_data, get_model
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,9 @@ class Solver(object):
         self.cv_loader = data['cv_loader']
         self.tt_loader = data['tt_loader']
         self.model = model
+        if args.ema:
+            self.ema_model = get_model(model, ema=True)
+            self.global_step = 0
         self.dmodel = distrib.wrap(model)
         self.optimizer = optimizer
 
@@ -121,6 +124,12 @@ class Solver(object):
             model = getattr(pretrained, self.args.continue_pretrained)()
             self.model.load_state_dict(model.state_dict())
 
+
+    def update_ema_variables(model, ema_model, alpha, global_step):
+        alpha = min(1 - 1 / (global_step + 1), alpha)
+        for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+            ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+
     def train(self):
         if self.args.save_again:
             self._serialize()
@@ -138,7 +147,8 @@ class Solver(object):
             start = time.time()
             logger.info('-' * 70)
             logger.info("Training...")
-            train_loss = self._run_one_epoch(epoch, mix_alpha=0.1)
+            #train_loss = self._run_one_epoch(epoch, mix_alpha=1)
+            train_loss = self._run_one_epoch(epoch)
             logger.info(
                 bold(f'Train Summary | End of Epoch {epoch + 1} | '
                      f'Time {time.time() - start:.2f}s | Train Loss {train_loss:.5f}'))
@@ -214,6 +224,12 @@ class Solver(object):
                 clean, _ = mixup_data(clean, lam, index)
             else:
                 estimate = self.dmodel(noisy)
+
+            if args.ema:
+                self.global_step += 1
+                self.update_ema_variables(self.dmodel, self.ema_model, args.ema.alpha, self.global_step)
+
+
             # apply a loss function after each layer
             with torch.autograd.set_detect_anomaly(True):
                 if self.args.loss == 'l1':
@@ -240,3 +256,25 @@ class Solver(object):
             # Just in case, clear some memory
             del loss, estimate
         return distrib.average([total_loss / (i + 1)], i + 1)[0]
+
+    def _run_one_epoch_usl(self, epoch, mix_alpha):
+        total_loss = 0
+        data_loader = self.tr_usl_loader
+        data_loader.epoch = epoch
+
+        label = "Unsupervised_Train"
+        name = label + f" | Epoch {epoch + 1}"
+        logprog = LogProgress(logger, data_loader, updates=self.num_prints, name=name)
+        for i, data in enumerate(logprog):
+            noisy = [x.to(self.device) for x in data]
+            estimate_teacher = self.ema_model(noisy)
+            
+            estimate_noise = noisy - estimate_teacher
+            lam = np.random.beta(mix_alpha, mix_alpha)
+            st_input = lam * estimate_noise + (1 - lam) * estimate_teacher
+
+            estimate_st = self.dmodel(st_input)
+
+
+
+
